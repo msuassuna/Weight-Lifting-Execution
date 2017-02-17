@@ -1,0 +1,279 @@
+---
+title: "Quantifying how well exercises are executed"
+author: "Marcus Suassuna Santos"
+date: "17 de fevereiro de 2017"
+output:
+  html_document:
+    number_sections: true
+---
+
+```{r, include=FALSE}
+library(knitr);library(dplyr);library(plyr);library(ggplot2);
+library(caret); library(pgmm); library(rpart); library(gbm);
+library(lubridate); library(lattice); library(rattle)
+library(randomForest); library(ipred)
+opts_chunk$set(tidy=TRUE, tidy.opts=list(blank=FALSE, width.cutoff=80), cache=TRUE)
+```
+
+# Summary {-}
+
+In this assignment, attention is given to how well a certain weight lifting exercises is executed. This is a rather new approach in research activity recognition, which has traditionally focused on discriminating between different activities. This type of research is conducted by Groupware@LES group and it is made public through its website ("http://groupware.les.inf.puc-rio.br/har").
+
+In this assignment we make use of this data and apply Machine Learning techniques to classify the execution of a weight lifting exercise, specifying correct execution and detecting execution mistakes. Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. The purpose of this assignment is to classify this 5 types of execution.
+
+# Data
+
+The entire data set of weight lifting execution can be downloaded using the following URL.
+
+```{r, eval = FALSE}
+trainURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(trainURL, "Data/pml-training.csv")
+```
+
+```{r}
+train <- read.table("Data/pml-training.csv", sep = ",", header = TRUE,
+                    row.names = NULL,na.strings = c("#DIV/0!","NA"),
+                    stringsAsFactors = FALSE)
+```
+
+For this assignment, we used three-axes *acceleration*, *gyroscope* and *magnetometer* data at a joint sampling rate of 45 Hz. Those sensors were mounted
+on the users' glove, armband, lumbar belt, and dumbbell. So we will use 36 input data to the model (one for each axis, each sensor and each different body part). The following code chunks select this information from the data set.
+
+```{r}
+Var <- names(train)[grep("^accel|^gyros|^magnet", names(train))]
+train <- train[,c(Var, "classe")]
+```
+
+## Prediction study design
+
+As we had a large sample size, we opted to split our training data into 3 parts:
+
+ * 60% training
+ 
+ * 20% test
+ 
+ * 20% validation (this part of the data will be used in final part when we evaluate combined predictors and final models)
+
+```{r}
+set.seed(160217)
+inTrain <- createDataPartition(train$classe, p = 0.6, list = FALSE)
+training <- train[inTrain,]
+testVal <- train[-inTrain,]
+
+inTest <- createDataPartition(testVal$classe, p = 0.5, list = FALSE)
+
+testing <- testVal[inTest,]
+validating <- testVal[-inTest,]
+```
+
+
+## The data - Exploratory analysis
+
+Some plots can be made in order to evaluate the relationship between variables. This is a tough task as our data set has multiple explanatory variables. But in general, the plots shows that some measures, for example, the acceleration positioned in dumbells and in the belt is capable of making some distinctions between each type of execution. In this case, the correct execution (class A) has small or negative accelerations in both devices. From this plot, we may see also that if both accelerations are high simultaneously, it probably belongs to class E. The Machine Learning algorithms make this type of analysis using all variables.
+
+```{r, fig.height=4}
+qplot(accel_dumbbell_x, accel_belt_x, color = classe, data = training,
+      alpha = I(0.1), size = 3)
+```
+
+## Pre-processing options
+
+It can be expected that in a big data set with lots of measures, sometimes explanatory variables can be correlated. This can inflate the variance of the regressors coefficients. The correlation matrix was obtained and using this information we can see that only 3.5% of the variables has a correlation greater than .7. Maybe this type of problem will not happen in this selected data set.
+
+```{r}
+(sum(abs(cor(training[-37])) > 0.7)-36)/36/36
+```
+
+However, using Principal Component Analysis (PCA), we can see that by using 17 components (less than half of the covariates), it is possible to capture 95% of total variance. Being so, we opted to use PCA to reduce processing time.
+
+```{r}
+preProc <- preProcess(training[-37], method="pca", thres=.95)
+print(preProc)
+```
+
+ * PCA applied to training data set
+ 
+```{r}
+traininigPC <- predict(preProc,training[-37])
+traininigPC <- data.frame(traininigPC, training$classe)
+```
+
+ * PCA applied to testing data set
+
+```{r}
+testingPC <- predict(preProc,testing[-37])
+testingPC <- data.frame(testingPC, testing$classe)
+```
+
+ * PCA applied to validating data set
+
+```{r}
+validatingPC <- predict(preProc,validating[-37])
+validatingPC <- data.frame(validatingPC, validating$classe)
+```
+
+# Data analysis
+
+## Fitted Models
+
+In this exercise, a bunch of Machine Learning techniques was applied to the data. They were all compared with each other and the final model for prediction was selected as the one with better accuracy.
+
+### Predicting with trees
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+modFitPC_RPART <- train(training.classe ~ .,
+                        method = "rpart", data = traininigPC)
+PredictPC_RPART <- predict(modFitPC_RPART, newdata = testingPC)
+```
+
+```{r}
+confusionMatrix(PredictPC_RPART, testingPC$testing.classe)
+```
+
+```{r}
+fancyRpartPlot(modFitPC_RPART$finalModel)
+```
+
+### Bagging
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+modFitPC_BAG <- train(training.classe ~ .,
+                      method = "treebag", data = traininigPC)
+PredictPC_BAG <- predict(modFitPC_BAG, newdata = testingPC)
+```
+
+```{r}
+confusionMatrix(PredictPC_BAG, testingPC$testing.classe)
+```
+
+### Random Forests
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+modFitPC_RF <- train(training.classe ~ .,
+                      method = "rf", data = traininigPC)
+PredictPC_RF <- predict(modFitPC_RF, newdata = testingPC)
+```
+
+```{r}
+confusionMatrix(PredictPC_RF, testingPC$testing.classe)
+```
+
+### Boosting
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+modFitPC_GBM <- train(training.classe ~ .,
+                     method = "gbm", data = traininigPC)
+PredictPC_GBM <- predict(modFitPC_GBM, newdata = testingPC)
+```
+
+```{r}
+confusionMatrix(PredictPC_GBM, testingPC$testing.classe)
+```
+
+### Model Based Prediction: Naive Bayse
+
+```{r, results='hide', warning = FALSE, message = FALSE}
+modFitPC_NB <- train(training.classe ~ .,
+                      method = "nb", data = traininigPC)
+PredictPC_NB <- predict(modFitPC_NB, newdata = testingPC)
+```
+
+```{r}
+confusionMatrix(PredictPC_NB, testingPC$testing.classe)
+```
+
+## Evaluation of models
+
+By looking only at the accuracy of each model when applied to the test set, one can see that model 3 (Random Forests) has a better classification performance (despite the fact that it is also the model that takes longer to run - using an 8GB, Intel Core i7 processor it takes about 20 minutes to run with the 18 principal components).
+
+```{r, results="asis"}
+ConfusionMatrices1<-rbind(confusionMatrix(PredictPC_RPART,
+                                          testing$classe)$overall,
+                         confusionMatrix(PredictPC_BAG, testing$classe)$overall,
+                         confusionMatrix(PredictPC_RF, testing$classe)$overall,
+                         confusionMatrix(PredictPC_GBM, testing$classe)$overall,
+                         confusionMatrix(PredictPC_NB, testing$classe)$overall)
+
+```
+
+```{r}
+rownames(ConfusionMatrices1) <- c("Predict_RPART", "Predict_BAG",
+                                 "Predict_RF", "Predict_GBM", "Predict_NB")
+kable(ConfusionMatrices1)
+```
+
+### Combining predictions and expected out of sample error
+
+As one last attempt to improve the model accuracy, one can try to combine different predictors and it was done in this code chunks. The model that combine those predictions was Random Forest. In this part of the assignment, the predictions were all made using the validating part of the data set.
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+predDF <- data.frame(PredictPC_RPART, PredictPC_BAG, PredictPC_RF,
+                     PredictPC_GBM, PredictPC_NB, testing$classe)
+modFitComb <- train(testing.classe ~ ., method = "rf", data = predDF)
+```
+
+```{r, results='hide', warning = FALSE, message = FALSE}
+PredictRPART <- predict(modFitPC_RPART, newdata = validatingPC)
+PredictBAG <- predict(modFitPC_BAG, newdata = validatingPC)
+PredictRF <- predict(modFitPC_RF, newdata = validatingPC)
+PredictGBM <- predict(modFitPC_GBM, newdata = validatingPC)
+PredictNB <- predict(modFitPC_NB, newdata = validatingPC)
+```
+
+```{r}
+predDFVal <- data.frame(PredictRPART, PredictBAG, PredictRF,
+                        PredictGBM, PredictNB, validating$classe)
+PredictComb <- predict(modFitComb, newdata = predDFVal)
+```
+
+```{r}
+ConfusionMatrices2<-rbind(confusionMatrix(PredictRPART,validating$classe)$overall,
+                         confusionMatrix(PredictBAG,validating$classe)$overall,
+                         confusionMatrix(PredictRF,validating$classe)$overall,
+                         confusionMatrix(PredictGBM,validating$classe)$overall,
+                         confusionMatrix(PredictNB, validating$classe)$overall,
+                         confusionMatrix(PredictComb,validating$classe)$overal)
+
+rownames(ConfusionMatrices2) <- c("Predict_RPART", "Predict_BAG",
+                                 "Predict_RF", "Predict_GBM", "Predict_NB",
+                                 "Predict_Comb")
+```
+
+```{r}
+kable(ConfusionMatrices2)
+```
+
+By looking at all confusion matrices, we can see that the predictions of the combined model are similar to Random Forest ones. So, we opted as to use as a final model not to combine the models and use Random Forest technique in the final testing data set.
+
+```{r}
+test <- read.table("Data/pml-testing.csv", sep = ",", header = TRUE,
+                   row.names = NULL,na.strings = c("#DIV/0!","NA"),
+                   stringsAsFactors = FALSE)
+```
+
+```{r}
+testingFinal <- test[,c(Var)]
+```
+
+```{r}
+testingFinalPC <- predict(preProc,testingFinal)
+testingFinalPC <- data.frame(testingFinalPC)
+```
+
+```{r}
+PredictRF_Final <- predict(modFitPC_RF, newdata = testingFinalPC)
+```
+
+```{r}
+PredictRF_Final
+```
+
+# Conclusions
+
+By analyzing a big data set and testing at a bunch of different machine learning techniques it was possible to see how important can be some parts of the analysis. The first one is the pre-processing alternatives. They can all impact the results and the interpretability of the models. Being so, it is important to check different alternatives of pre-processing alternatives. Another important idea is that using different Machine Learning algorithms, one can have very different results, so testing different approaches, including the combination of different them may give a good idea of what to expect of the model in new data sets, in real life situations.
+
+In our data set, it is expected a high accuracy with Random Forest applied to the first 17 Principal Components of the data, around 95% (by testing the model in the Quiz, that was exactly the error rate, as 19 out of the 20 classifications were correct). Maybe if some other variables were also included in the model or other components, better results could be achieved. Other models didn't produce good results, as was expected for example from Boosting. But Random Forest and Bagging produced reasonably accurate results.
+
+# References {-}
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
